@@ -1,18 +1,27 @@
-from attr import has
 import requests
 from typing import cast
-from .const import *
+from const import *
 import logging
+from configparser import ConfigParser
+import sys
+import os
+
+def get_config(config_dir):
+    # Load configuration file
+    config = ConfigParser(delimiters=('=', ))
+    config.optionxform = str
+    config.read([os.path.join(config_dir, 'config.ini.dist'), os.path.join(config_dir, 'config.ini')])
+    return config
 
 _LOGGER = logging.getLogger(__name__)
-
+settings = get_config(sys.path[0])
 
 class BdrAPI:
     BASE_URL = "https://ruapi.remoteapp.bdrthermea.com/v1.0"
     BASE_HEADER = {
         "Accept": "application/json, text/plain, */*",
         "Connection": "keep-alive",
-        "X-Requested-With": "com.bdrthermea.roomunitapplication.baxi",
+        "X-Requested-With": "com.bdrthermea.roomunitapplication.remeha",
         "Content-Type": "application/json;charset=UTF-8",
         "Sec-Fetch-Site": "cross-site",
         "Sec-Fetch-Mode": "cors",
@@ -27,11 +36,7 @@ class BdrAPI:
     }
     capabilities = {}
 
-    def __init__(self, hass, user, password, pairing_code, brand: str):
-        self.hass_storage = hass.helpers.storage.Store(
-            STORAGE_VERSION, STORAGE_KEY, private=True, atomic_writes=True
-        )
-        self.hass = hass
+    def __init__(self, user, password, pairing_code, brand: str):
         self._brand = brand
         self._bootstraped = False
         self._user = user
@@ -41,7 +46,6 @@ class BdrAPI:
     async def bootstrap(self):
         if self._bootstraped:
             return
-
         if not await self._load_stored_token() or not await self.connection_status():
             await self._login()
             await self._pair()
@@ -51,13 +55,18 @@ class BdrAPI:
         self._bootstraped = True
 
     async def _load_stored_token(self):
-        data = await self.hass_storage.async_load()
-        self.token = data.get("token", None) if data else None
+        #data = await self.hass_storage.async_load()
+        self.token = settings['General'].get('token','')
+        #data.get("token", None) if data else None
         return bool(self.token)
 
     async def _store_token(self, token):
         data = {"token": token}
-        await self.hass_storage.async_save(data)
+        settings['General']['token'] = token
+        with open('example.ini', 'w') as configfile:
+            settings.write(configfile)
+        #await self.hass_storage.async_save(data)
+        print(token)
         self.token = token
 
     async def _login(self):
@@ -80,7 +89,7 @@ class BdrAPI:
             "account": self._user,
             "brand": self._brand,
             "password": self._password,
-            "device": "HomeAssistant",
+            "device": "OpenHAB",
             "otp": self._pairing_code,
         }
 
@@ -91,12 +100,14 @@ class BdrAPI:
             raise Exception('Error pairing integration with BDR')
 
         token = response.json().get("token", None)
+        print(token)
         await self._store_token(token)
 
     def _sync_request(self, request, url, headers, payload=None):
         try:
             if request == "get":
                 response = requests.get(url=url, headers=headers)
+                #print(response.json().get('status'))
             elif request == "put":
                 response = requests.put(url=url, json=payload, headers=headers)
             elif request == "post":
@@ -110,10 +121,15 @@ class BdrAPI:
                 f"ERROR with {request} request to {url}: {response.status_code}"
             )
             return None
+        try:
+            response = response.json()
+        except:
+            return None
         return response
 
     async def async_post_request(self, endpoint, payload, headers=BASE_HEADER):
 
+        return self._sync_request("post", endpoint, headers, payload)
         return await self.hass.async_add_executor_job(
             self._sync_request, "post", endpoint, headers, payload
         )
@@ -123,6 +139,7 @@ class BdrAPI:
         headers = headers.copy()
         headers["X-Bdr-Pairing-Token"] = self.token
 
+        return self._sync_request("put", endpoint, headers, payload)
         return await self.hass.async_add_executor_job(
             self._sync_request, "put", endpoint, headers, payload
         )
@@ -132,6 +149,7 @@ class BdrAPI:
         headers = headers.copy()
         headers["X-Bdr-Pairing-Token"] = self.token
 
+        return self._sync_request("get", endpoint, headers)
         response = await self.hass.async_add_executor_job(
             self._sync_request, "get", endpoint, headers
         )
@@ -142,13 +160,14 @@ class BdrAPI:
         api_endpoint = self.endpoints["CONNECTION"]
 
         response = await self.async_get_request(api_endpoint)
-
+        #print("response " + str(response))
         return response and response.get("status") == "connected_to_appliance"
 
     async def _load_capabilities(self):
         api_endpoint = self.endpoints["CAPABILITIES"]
 
         capabilities = await self.async_get_request(api_endpoint)
+        #print("capabilities " + str(capabilities))
 
         for subsystem_name, subsystem in capabilities.items():
             if isinstance(subsystem, list):
@@ -192,8 +211,8 @@ class BdrAPI:
         return self._bootstraped
 
     async def get_status(self):
-        api_endpoint = self.capabilities["centralHeatingZones"]["statusUri"]
-
+        #api_endpoint = self.capabilities["centralHeatingZones"]["statusUri"]        
+        api_endpoint = self.capabilities["centralHeatingZones"]["uri"] + "/status"  # EDITED FOR REMEHA eTWIST
         return await self.async_get_request(api_endpoint)
 
     async def set_target_temperature(self, target_temp):
@@ -221,13 +240,65 @@ class BdrAPI:
             "currentHeatingTimeProgram": schedule_program,
         }
         return await self.async_put_request(api_endpoint, payload)
-
-    async def set_operating_mode(self, mode):
-        api_endpoint = self.capabilities["system"]["operatingModeUri"]
+        
+    async def set_antifrost(self, mode):
+        api_endpoint = self.capabilities["centralHeatingZones"][
+            "putSetpointAntiFrostUri"
+        ]
         payload = {
             "mode": mode,
         }
         return await self.async_put_request(api_endpoint, payload)
+
+    async def set_water_mode_reduced(self):
+        api_endpoint = self.capabilities["domesticHotWaterZones"][
+            "putSetpointReducedUri"
+        ]
+        payload = {
+        }
+        return await self.async_put_request(api_endpoint, payload)
+        
+    async def set_water_mode_comfort(self):
+        api_endpoint = self.capabilities["domesticHotWaterZones"][
+            "putSetpointComfortUri"
+        ]
+        payload = {
+        }
+        return await self.async_put_request(api_endpoint, payload)
+
+    async def get_water_mode(self):
+        api_endpoint = self.capabilities["domesticHotWaterZones"]["uri"] + "/setpoint"  # EDITED FOR REMEHA eTWIST
+        return await self.async_get_request(api_endpoint)
+
+    async def set_time_program(self, program, day, schedule):
+        api_endpoint = self.capabilities["centralHeatingZones"][
+            "timeProgramsUri"
+        ]
+        payload = {
+            "heating": {
+                program: {
+                day:  schedule     
+                }
+            }
+        }
+        print(payload)
+        return await self.async_put_request(api_endpoint, payload)
+
+
+    async def get_time_programs(self):
+        api_endpoint = self.capabilities["centralHeatingZones"]["timeProgramsUri"]
+
+        return await self.async_get_request(api_endpoint)
+
+
+    async def set_operating_mode(self, mode):
+        #api_endpoint = self.capabilities["system"]["operatingModeUri"]
+        #print(api_endpoint)
+        #payload = {
+        #    "mode": mode,
+        #}
+        #return await self.async_put_request(api_endpoint, payload)
+        return
 
     async def get_consumptions(self):
         api_endpoint = self.capabilities["producers"]["energyConsumptionUri"]
