@@ -66,7 +66,7 @@ class BdrAPI:
         with open('example.ini', 'w') as configfile:
             settings.write(configfile)
         #await self.hass_storage.async_save(data)
-        print(token)
+        #print(token)
         self.token = token
 
     async def _login(self):
@@ -100,7 +100,6 @@ class BdrAPI:
             raise Exception('Error pairing integration with BDR')
 
         token = response.json().get("token", None)
-        print(token)
         await self._store_token(token)
 
     def _sync_request(self, request, url, headers, payload=None):
@@ -115,7 +114,6 @@ class BdrAPI:
         except Exception as e:
             _LOGGER.exception(f"EXCEPTION with {request} request to {url}:", e)
             raise e
-
         if not response.ok:
             _LOGGER.error(
                 f"ERROR with {request} request to {url}: {response.status_code}"
@@ -123,6 +121,7 @@ class BdrAPI:
             return None
         try:
             response = response.json()
+            #print(response)
         except:
             return None
         return response
@@ -299,6 +298,23 @@ class BdrAPI:
         #}
         #return await self.async_put_request(api_endpoint, payload)
         return
+
+    async def set_history(self,address):
+        api_endpoint = "https://remoteapp.bdrthermea.com" + "/history/register"
+        payload = {
+            "address": address
+        }
+        print(payload)
+        return await self.async_put_request(api_endpoint, payload)
+
+    async def get_history(self,address):
+        api_endpoint = "https://remoteapp.bdrthermea.com" + "/history/"+address+"/query?type=heating&from=2022-11-14&to=2022-11-20&groupBy=DAY"
+        #api_endpoint = "https://remoteapp.bdrthermea.com" + "/history/register"
+        #api_endpoint = "https://remoteapp.bdrthermea.com" + "/user/remeha/current"
+        #api_endpoint = self.capabilities["system"]["errorStatusUri"]
+        print(api_endpoint)
+
+        return await self.async_get_request(api_endpoint)
 
     async def get_consumptions(self):
         api_endpoint = self.capabilities["producers"]["energyConsumptionUri"]

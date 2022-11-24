@@ -15,12 +15,23 @@ import sys
 settings = get_config(sys.path[0])
 base_url = settings['Openhab'].get('openhab_url','')
 
+HISTORY_ADDRESS = "4aade00c-c738-4dfe-8ff6-c39c5984da75"
+
 def coro(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
         return asyncio.run(f(*args, **kwargs))
 
     return wrapper
+
+def string_to_time(string):
+  return time.strptime(string,"%H:%M")
+
+def add_values(amount, val):
+    array = []
+    for i in range(0, amount):
+        array = array + [val]
+    return array
 
 def datetime_to_string(timestamp, dt_format='%Y-%m-%d %H:%M:%S'):
     """
@@ -119,6 +130,58 @@ async def get_status():
 
 @cli.command()
 @coro
+async def get_schedule():
+    api = await get_api()
+    resp = await api.get_time_programs()
+    #program = {'monday': [{'time': '07:30', 'activity': 2}, {'time': '13:00', 'activity': 4}, {'time': '17:20', 'activity': 2}, {'time': '21:00', 'activity': 4}], 'tuesday': [{'time': '07:00', 'activity': 2}, {'time': '07:10', 'activity': 4}, {'time': '17:20', 'activity': 2}, {'time': '21:00', 'activity': 4}], 'wednesday': [{'time': '07:00', 'activity': 2}, {'time': '07:10', 'activity': 4}, {'time': '17:20', 'activity': 2}, {'time': '21:00', 'activity': 4}], 'thursday': [{'time': '07:00', 'activity': 2}, {'time': '07:10', 'activity': 4}, {'time': '17:20', 'activity': 2}, {'time': '21:00', 'activity': 4}], 'friday': [{'time': '07:00', 'activity': 2}, {'time': '07:10', 'activity': 4}, {'time': '17:20', 'activity': 2}, {'time': '21:00', 'activity': 4}], 'saturday': [{'time': '17:20', 'activity': 2}, {'time': '21:00', 'activity': 4}], 'sunday': [{'time': '08:00', 'activity': 2}, {'time': '13:30', 'activity': 4}, {'time': '21:00', 'activity': 4}]}
+    program = resp.get("heating").get("1")
+    days = ('monday','tuesday','wednesday','thursday','friday','saturday','sunday')
+    index = 1
+    data = {}
+    activity = 0
+    for day in days:
+        blocks = program.get(day)
+        value_array = []
+        time_prev = time.gmtime(0)
+        round_result = 0
+        for block in blocks:
+            time_string = block.get('time')
+            time_val = string_to_time(time_string) 
+            time_val_blocks_pre = (time_val[3] - time_prev[3] + (time_val[4]-time_prev[4])/60)*4
+            time_val_blocks = round(round_result + time_val_blocks_pre)
+            round_result = time_val_blocks_pre - time_val_blocks
+            time_prev = time_val
+            value_array = value_array + add_values(time_val_blocks,activity)
+            #data
+            #print(time_val_blocks)
+            activity = block.get('activity')
+            if(activity == 2): 
+                activity = 1
+            else:
+                activity= 0
+        value_array = value_array + add_values(96-len(value_array),activity)
+        #print(len(value_array))
+
+        data.update({str(index):
+            {
+                "key":str(index),
+                "value":value_array
+            }
+        })
+        index += 1
+    data.update({
+        "99":"noc,dzień","100":{"event":False,"lastItemState":-1,"inactive":False}
+    })
+    # data in format of timeline picker
+    # https://community.openhab.org/t/timeline-picker-to-setup-heating-light-and-so-on/55564
+    data_str = str(data).replace("'",'"').replace("False","false").replace(" ","")
+    openhab = OpenHAB(base_url,None, None, None, 1)
+    item_schedule = openhab.get_item('TransferItem1')
+    item_schedule.update(data_str)
+    #print(data_str)
+
+@cli.command()
+@coro
 @click.option('--mode',
               required=True,
               default=None,
@@ -151,14 +214,23 @@ async def get_water_mode():
 @click.option('--mode',
               required=True,
               default=None,
-              help=(('Target temperature in degrees, '
-                     'Manual override')))
+              help=(('Set water mode - always eco or hot, '
+                     'anti-frost or comfort')))
 async def set_water_mode(mode):
     api = await get_api()
     if mode == "anti-frost":
         await api.set_water_mode_reduced()
     elif mode == "comfort":
         await api.set_water_mode_comfort()
+
+@cli.command()
+@coro
+async def get_history():
+    api = await get_api()
+    resp = await api.set_history(HISTORY_ADDRESS)
+    print(resp)
+    resp = await api.get_history(HISTORY_ADDRESS)
+    print(resp)
 
 @cli.command()
 @click.option('--value',
@@ -185,75 +257,23 @@ async def set_temperature(value):
 
 @cli.command()
 @click.option('--day',
-              required=False,
+              required=True,
               default="monday",
               help=(('Day to modify, '
                      'Day of the week in format monday, tuesday, wednesday, etc')))
 @click.option('--schedule',
-              required=False,
+              required=True,
               default=None,
               help=(('Schedule for selected day, '
                      'Array of activities')))
 @coro
 async def set_time_program(day,schedule):
     api = await get_api()
-    
-    schedule = []
+    print(schedule)
+    await api.set_time_program("1",day,schedule)
 
-    openhab = OpenHAB(base_url,None, None, None, 1)
-    item_alarm = openhab.get_item('Phone_01_AlarmClockDate')
-    try:
-        alarm_time = datetime.strptime(item_alarm.state,"%Y-%m-%d %H:%M")
-        alarm_max = alarm_time.replace(hour=12, minute=0)
-        if(alarm_time < alarm_max):
-            day = alarm_time.strftime("%A").lower()
-            heating_start = alarm_time.strftime("%H:%M")
-            # If its HO day, then keep heating on for longer time (4 hours)
-            item_ho_day = openhab.get_item('HO_01_' + day.capitalize())
-            print(day)
-            heating_duration = 10
-            if(item_ho_day.state == 'ON'):
-                heating_duration = 60*4
-            heating_end = (alarm_time + timedelta(minutes=heating_duration)).strftime("%H:%M")
-            
-
-            resp = await api.get_time_programs()
-            print(resp.get('heating',{}).get("1",{}).get(day))
-
-            schedule = schedule + [
-                {
-                    "time": heating_start,
-                    "activity": 2
-                },
-                {
-                    "time": heating_end,
-                    "activity": 4
-                }
-            ]
-        else:
-            print("alarm late")
-    except:
-        print("no alarm #1")
-        
-    item_alarm2 = openhab.get_item('Phone_02_AlarmClockDate')
-    try:
-        alarm_time2 = datetime.strptime(item_alarm2.state,"%Y-%m-%d %H:%M")
-        if(alarm_time < alarm_max):
-            print("ok")
-    except:
-        print("no alarm #2")
-        
-    schedule = schedule + [
-        {
-            "time": "17:20",
-            "activity": 2
-        },
-        {
-            "time": "21:00",
-            "activity": 4
-        }
-    ]
-    #schedule = json.dumps(schedule)
+async def set_time_program2(day,schedule):
+    api = await get_api()
     print(schedule)
     await api.set_time_program("1",day,schedule)
 
