@@ -82,7 +82,9 @@ async def get_status():
     item_nextSwitchDate = openhab.get_item('Thermostat_NextSwitch_Time')
     item_nextSwitchTemperature = openhab.get_item('Thermostat_NextSwitch_Temperature')
     item_currentTemperature = openhab.get_item('Thermostat_Temperature')
+    item_currentSetpoint = openhab.get_item('Thermostat_TemperatureControl')
     item_flowTemperature = openhab.get_item('Thermostat_FlowTemperature')
+    
     
     mode = resp.get("mode","")
     item_mode.update(str(mode))
@@ -99,11 +101,15 @@ async def get_status():
 
     if(mode == "temporary-override"):
         nextSwitch = resp.get("temporaryOverrideEnd")
-        item_nextSwitchDate.update(nextSwitch)
+        item_nextSwitchDate.update(nextSwitch.replace("T"," "))
 
     # Get current temperature
     currentTemperature = resp.get("roomTemperature",{}).get("value",None)
     item_currentTemperature.update(currentTemperature)
+    
+    # Get current setpoint
+    currentSetpointTemperature = resp.get("roomTemperatureSetpoint",{}).get("value",None)
+    item_currentSetpoint.update(currentSetpointTemperature)
 
     # Get current program
     program = resp.get("timeProgram",1)
@@ -152,7 +158,6 @@ async def get_schedule():
             round_result = time_val_blocks_pre - time_val_blocks
             time_prev = time_val
             value_array = value_array + add_values(time_val_blocks,activity)
-            #data
             #print(time_val_blocks)
             activity = block.get('activity')
             if(activity == 2): 
@@ -192,6 +197,11 @@ async def set_schedule(mode):
     await api.set_schedule(mode)
 
 @cli.command()
+@click.option('--mode',
+              required=True,
+              default=None,
+              help=(('Switch to anti frost'
+                     'Antifrost mode')))
 @coro
 async def set_antifrost(mode):
     api = await get_api()
@@ -223,13 +233,48 @@ async def set_water_mode(mode):
     elif mode == "comfort":
         await api.set_water_mode_comfort()
 
+def statistics_to_openhab(openhab,item_name,data):
+    value = data[0].get('value')
+    item_daily = openhab.get_item(item_name + '_Daily')
+    item_hourly = openhab.get_item(item_name + '_Hourly')
+    use_daily_previous = item_daily.state
+    if use_daily_previous is None:
+        use_daily_previous = 0
+    item_daily.update(value)
+    use_hourly = value - use_daily_previous
+    item_hourly.update(use_hourly)
+
+
 @cli.command()
+@click.option('--datefrom',
+              required=True,
+              default=None,
+              help=(('Get heating history from selected date, '
+                     'Data in format YYYY-MM-DD')))
+@click.option('--dateto',
+              required=False,
+              default=None,
+              help=(('Get heating history from selected date, '
+                     'Data in format YYYY-MM-DD')))
+@click.option('--type',
+              required=False,
+              default='both',
+              help=(('Data type, '
+                     'Can be heating, hotwater or both')))
 @coro
-async def get_history():
+async def get_history(datefrom, dateto, type):
     api = await get_api()
-    resp = await api.set_history(HISTORY_ADDRESS)
-    print(resp)
-    resp = await api.get_history(HISTORY_ADDRESS)
+    if(dateto is None):
+        dateto = datefrom
+
+    openhab = OpenHAB(base_url,None, None, None, 1)
+    if(type == 'both'):
+        resp = await api.get_history(HISTORY_ADDRESS, datefrom, dateto, 'heating')
+        statistics_to_openhab(openhab,'Thermostat_HeatingUsage',resp)
+        resp = await api.get_history(HISTORY_ADDRESS, datefrom, dateto, 'hotwater')
+        statistics_to_openhab(openhab,'Thermostat_HotWaterUsage',resp)
+    else:
+        resp = await api.get_history(HISTORY_ADDRESS, datefrom, dateto, type)
     print(resp)
 
 @cli.command()

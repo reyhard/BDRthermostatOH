@@ -76,12 +76,13 @@ class BdrAPI:
             "username": self._user,
             "password": self._password,
         }
-
+        print("login")
         response = await self.async_post_request(endpoint=api_endpoint, payload=payload)
         if not response:
             logging.error('ERROR logging to BDR. Perhaps wrong password??')
             raise Exception('ERROR logging to BDR. Perhaps wrong password??')
-        self.amdatu_token = response.headers.get("amdatu_token")
+        #self.amdatu_token = response.headers.get("amdatu_token")
+        print(response)
 
     async def _pair(self):
         api_endpoint = self.endpoints["PAIR"]
@@ -143,11 +144,12 @@ class BdrAPI:
             self._sync_request, "put", endpoint, headers, payload
         )
 
-    async def async_get_request(self, endpoint, headers=BASE_HEADER):
+    async def async_get_request(self, endpoint, headers=BASE_HEADER, addToken = True):
 
         headers = headers.copy()
-        headers["X-Bdr-Pairing-Token"] = self.token
-
+        if addToken:
+            headers["X-Bdr-Pairing-Token"] = self.token
+            
         return self._sync_request("get", endpoint, headers)
         response = await self.hass.async_add_executor_job(
             self._sync_request, "get", endpoint, headers
@@ -307,14 +309,14 @@ class BdrAPI:
         print(payload)
         return await self.async_put_request(api_endpoint, payload)
 
-    async def get_history(self,address):
-        api_endpoint = "https://remoteapp.bdrthermea.com" + "/history/"+address+"/query?type=heating&from=2022-11-14&to=2022-11-20&groupBy=DAY"
-        #api_endpoint = "https://remoteapp.bdrthermea.com" + "/history/register"
-        #api_endpoint = "https://remoteapp.bdrthermea.com" + "/user/remeha/current"
-        #api_endpoint = self.capabilities["system"]["errorStatusUri"]
-        print(api_endpoint)
+    async def get_history(self,address,dateFrom,dateTo,type):
+        api_endpoint = "https://remoteapp.bdrthermea.com" + f"/history/{address}/query?type={type}&from={dateFrom}&to={dateTo}&groupBy=DAY"
 
-        return await self.async_get_request(api_endpoint)
+        headers = self.BASE_HEADER
+        headers = headers.copy()
+        headers["amdatu_token"] = self.amdatu_token
+
+        return await self.async_get_request(api_endpoint, headers, False)
 
     async def get_consumptions(self):
         api_endpoint = self.capabilities["producers"]["energyConsumptionUri"]

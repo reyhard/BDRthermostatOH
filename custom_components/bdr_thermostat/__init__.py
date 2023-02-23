@@ -1,81 +1,142 @@
-"""The BDR Thermostat integration."""
+from BdrAPI import BdrAPI
+from const import *
 
-from .BdrAPI import BdrAPI
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from .const import *
-from homeassistant.const import CONF_NAME, CONF_USERNAME, CONF_PASSWORD, Platform
-from .config_schema import CONF_PAIR_CODE, CONF_BRAND
-from homeassistant.helpers import device_registry as dr
+import click
+import asyncio
+#from config_schema import CONF_PAIR_CODE, CONF_BRAND
+from functools import wraps
+from openhab import OpenHAB
+import __main__ as main
 
-PLATFORMS = [
-    Platform.CLIMATE,
-    Platform.SENSOR,
-]
+base_url = 'http://openhab:8080/rest'
 
+def coro(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        return asyncio.run(f(*args, **kwargs))
 
-async def async_setup(hass: HomeAssistant, config) -> bool:
-    domain_configs = config.get(DOMAIN, [])
-    for domain_config in domain_configs:
-        if domain_config.get("platform", False) == PLATFORM:
-            api = BdrAPI(
-                hass,
-                domain_config.get(CONF_USERNAME),
-                domain_config.get(CONF_PASSWORD),
-                domain_config.get(CONF_PAIR_CODE),
-                domain_config.get(CONF_BRAND)
-            )
-            await api.bootstrap()
-            hass.data[PLATFORM] = {DATA_KEY_API: api, DATA_KEY_CONFIG: domain_config}
-            if api.is_feature_enabled(FEATURE_ENERGY_CONSUMPTION):
-                await hass.helpers.discovery.async_load_platform(
-                    Platform.SENSOR, PLATFORM, {}, config
-                )
-            await hass.helpers.discovery.async_load_platform(
-                Platform.CLIMATE, PLATFORM, {}, config
-            )
-            return True
-    return True
+    return wrapper
 
-
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry."""
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unload_ok:
-        hass.data.pop(PLATFORM, None)
-
-    return unload_ok
-
-
-async def async_setup_entry(hass, config_entry):
-
+async def get_api():
+    print("init data")
     api = BdrAPI(
-        hass,
-        config_entry.data.get(CONF_USERNAME),
-        config_entry.data.get(CONF_PASSWORD),
-        config_entry.data.get(CONF_PAIR_CODE),
-        config_entry.data.get(CONF_BRAND),
+        "anfiertjew@gmail.com",
+        "ky7@9ddXH#",
+        "652467576",
+        "remeha",
     )
     await api.bootstrap()
-    hass.data[PLATFORM] = {DATA_KEY_API: api, DATA_KEY_CONFIG: config_entry.data}
-    register_device(hass, config_entry, api.get_device_information())
-    hass.config_entries.async_setup_platforms(config_entry, PLATFORMS)
 
-    return True
+    return api
+
+## Main program
+@click.group()
+def cli():
+    """
+    BDR Thermea API
+    """
+    pass
+
+@cli.command()
+@coro
+async def get_status():
+    print("get status")
+    api = await get_api()
+    resp = await api.get_status()
+
+    # Setup openhab items
+    openhab = OpenHAB(base_url,None, None, None, 1)
+    item_mode = openhab.get_item('Thermostat_Mode')
+    item_program = openhab.get_item('Thermostat_Program')
+    item_nextSwitchDate = openhab.get_item('Thermostat_NextSwitch_Time')
+    item_currentTemperature = openhab.get_item('Thermostat_Temperature')
+    
+    mode = resp.get("mode","")
+    item_mode.update(str(mode))
+
+    # Get data for next switch
+    if(mode == "schedule"):
+        nextSwitch = resp.get("nextSwitch")
+        timeChange = nextSwitch.get("time",None)
+        dayOffset = nextSwitch.get("dayOffset",None)
+        temperature = nextSwitch.get("roomTemperatureSetpoint",{}).get("value",None)
+
+    if(mode == "temporary-override"):
+        nextSwitch = resp.get("temporaryOverrideEnd")
+        item_nextSwitchDate.update(nextSwitch)
+
+    # Get current temperature
+    currentTemperature = resp.get("roomTemperature",{}).get("value",None)
+    item_currentTemperature.update(currentTemperature)
+
+    # Get current program
+    program = resp.get("timeProgram",1)
+    item_program.update(str(program))
+
+    print(resp)
+
+@cli.command()
+@coro
+@click.option('--mode',
+              required=True,
+              default=None,
+              help=(('Switch to selected heating program'
+                     'Manual override')))
+async def set_schedule(mode):
+    api = await get_api()
+    await api.set_schedulemode(mode)
+
+@cli.command()
+@coro
+async def get_water_mode():
+    api = await get_api()
+    resp = await api.get_water_mode()
+    
+    openhab = OpenHAB(base_url,None, None, None, 1)
+    item_mode = openhab.get_item('Thermostat_Water_Mode')
+    mode = resp.get("mode","")
+    item_mode.update(str(mode))
+
+@cli.command()
+@coro
+@click.option('--mode',
+              required=True,
+              default=None,
+              help=(('Target temperature in degrees, '
+                     'Manual override')))
+async def set_water_mode(mode):
+    api = await get_api()
+    if mode == "anti-frost":
+        await api.set_water_mode_comfort()
+    elif mode == "comfort":
+        await api.set_water_mode_reduced()
+
+@cli.command()
+@click.option('--value',
+              required=True,
+              default=None,
+              help=(('Target temperature in degrees, '
+                     'Manual override')))
+@coro
+async def set_temperature(value):
+    api = await get_api()
+    await api.set_override_temperature(value)
 
 
-async def update_listener(hass, config_entry):
-    """Handle options update."""
-    await hass.config_entries.async_reload(config_entry.entry_id)
+#asyncio.run(set_temperature(16))
 
+#loop = asyncio.get_event_loop()
+#loop.run_until_complete(main())
+#loop.close()
 
-def register_device(hass, config_entry, device_info):
-    device_registry = dr.async_get(hass)
-    device_registry.async_get_or_create(
-        config_entry_id=config_entry.entry_id,
-        identifiers={(SERIAL_KEY, device_info.get(SERIAL_KEY, "1234"))},
-        manufacturer=DEVICE_MANUFACTER,
-        name=config_entry.data.get(CONF_NAME),
-        model=device_info.get("name", DEVICE_MODEL),
-        sw_version=device_info.get("softwareVersion", DEFAULT_VERSION)
-    )
+if not hasattr(main, '__file__'):
+    """
+    Running in interactive mode in the Python shell
+    """
+    print("Running interactively in Python shell")
+
+elif __name__ == '__main__':
+    """
+    CLI mode
+    """
+    cli()
